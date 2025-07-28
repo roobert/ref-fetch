@@ -13,8 +13,11 @@ import tomli
 from typing import Dict, Any, Union
 import requests
 from ddgs import DDGS
+from rich.console import Console
 
 # --- Configuration ---
+
+console = Console()
 
 # The root directory for caching fetched repositories.
 # Can be overridden by the REFS_FETCH_CACHE environment variable.
@@ -42,8 +45,29 @@ def save_choices_cache(cache: Dict[str, str]):
         with open(CHOICES_CACHE_FILE, 'w') as f:
             json.dump(cache, f, indent=2)
     except IOError:
-        print(f"  [WARN] Could not save choices cache to {CHOICES_CACHE_FILE}")
+        log("WARN", f"Could not save choices cache to {color_path(CHOICES_CACHE_FILE)}")
 
+
+# --- Logging ---
+
+def log(level: str, message: str, indent: int = 0, debug: bool = False):
+    """Prints a formatted and color-coded log message."""
+    if level.upper() == "DEBUG" and not debug:
+        return
+
+    colors = {
+        "INFO": "cyan",
+        "WARN": "yellow",
+        "ERROR": "red",
+        "SUCCESS": "green",
+        "PROMPT": "blue",
+        "CACHE": "magenta",
+        "DEBUG": "bright_black"
+    }
+    
+    color = colors.get(level.upper(), "white")
+    indent_str = "  " * indent
+    console.print(f"{indent_str}[white][[/][{color}]{level.upper().ljust(7)}[/{color}][white]][/] {message}", highlight=False)
 
 # Suppress the specific NotOpenSSLWarning by its message content.
 warnings.filterwarnings(
@@ -51,13 +75,29 @@ warnings.filterwarnings(
     message="urllib3 v2 only supports OpenSSL 1.1.1+",
 )
 
+
+# --- Coloring ---
+
+def color_pkg(pkg_name: str) -> str:
+    """Formats a package name with a consistent color."""
+    return f"[yellow]{pkg_name}[/yellow]"
+
+def color_version(version: str) -> str:
+    """Formats a version string with a consistent color."""
+    return f"[bright_blue]{version}[/bright_blue]"
+
+def color_path(path: str) -> str:
+    """Formats a path string with a consistent color."""
+    return f"[grey50]{path}[/grey50]"
+
+
 # --- Standard Library Fetching ---
 
 def get_core_tool_version(project_path: str, ecosystem: str) -> Union[str, None]:
     """Parses .mise.toml to find the version of the core tool (python, node, etc.)."""
     mise_path = os.path.join(project_path, '.mise.toml')
     if not os.path.exists(mise_path):
-        print(f"  [WARN] '.mise.toml' not found. Cannot fetch standard library.")
+        log("WARN", f"'{color_path('.mise.toml')}' not found. Cannot fetch standard library.")
         return None
     
     try:
@@ -67,10 +107,10 @@ def get_core_tool_version(project_path: str, ecosystem: str) -> Union[str, None]
         tool_name = 'python' if ecosystem == 'pip' else ecosystem
         version = config.get('tools', {}).get(tool_name)
         if version:
-            print(f"  [INFO] Found {tool_name} version {version} in .mise.toml")
+            log("INFO", f"Found {color_pkg(tool_name)} version {color_version(version)} in .mise.toml")
             return version
     except tomli.TOMLDecodeError as e:
-        print(f"  [ERROR] Could not parse '.mise.toml': {e}")
+        log("ERROR", f"Could not parse '.mise.toml': {e}")
     return None
 
 def fetch_std_lib(project_path: str, ecosystem: str, version: str, debug: bool = False):
@@ -83,11 +123,11 @@ def fetch_std_lib(project_path: str, ecosystem: str, version: str, debug: bool =
     
     repo_url = STD_LIB_REPOS.get(ecosystem)
     if not repo_url:
-        print(f"  [WARN] No standard library repository defined for '{ecosystem}'.")
+        log("WARN", f"No standard library repository defined for '{ecosystem}'.")
         return
 
     pkg_name = "cpython" if ecosystem == "pip" else "swift" if ecosystem == "swift" else "node"
-    print(f"\n--- Processing Standard Library: {pkg_name}=={version} ---")
+    console.print(f"\n--- Processing Standard Library: {color_pkg(pkg_name)}=={color_version(version)} ---")
     output_dir = os.path.join(project_path, 'refs', ecosystem, pkg_name, version)
     clone_and_checkout(repo_url, version, output_dir, debug)
 
@@ -102,7 +142,7 @@ def get_installed_python_packages(project_path: str) -> Dict[str, Dict[str, Any]
     python_executable = os.path.join(venv_path, 'bin', 'python')
 
     if not os.path.exists(python_executable):
-        print(f"Error: Python executable not found at '{python_executable}'", file=sys.stderr)
+        log("ERROR", f"Python executable not found at '{color_path(python_executable)}'")
         return {}
 
     script = """
@@ -137,12 +177,12 @@ sys.stdout.write(json.dumps(packages))
             packages.pop(noisy_pkg, None)
         return packages
     except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
-        print(f"Error inspecting Python environment: {e}", file=sys.stderr)
+        log("ERROR", f"Error inspecting Python environment: {e}")
         return {}
 
 def get_pypi_repo_url(package_name: str, debug: bool = False) -> Union[str, None]:
     """Queries the PyPI API for a package's repository URL."""
-    if debug: print(f"  [DEBUG] Querying PyPI API for '{package_name}'...")
+    if debug: log("DEBUG", f"Querying PyPI API for '{package_name}'...")
     try:
         url = f"https://pypi.org/pypi/{package_name}/json"
         response = requests.get(url, timeout=10)
@@ -156,7 +196,7 @@ def get_pypi_repo_url(package_name: str, debug: bool = False) -> Union[str, None
                         return normalize_to_repo_root(value)
         return None
     except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-        if debug: print(f"  [DEBUG] Could not query PyPI API: {e}")
+        if debug: log("DEBUG", f"Could not query PyPI API: {e}")
         return None
 
 # --- Node.js Ecosystem Logic ---
@@ -168,7 +208,7 @@ def get_installed_node_packages(project_path: str) -> Dict[str, Dict[str, Any]]:
     """
     node_modules_path = os.path.join(project_path, 'node_modules')
     if not os.path.isdir(node_modules_path):
-        print(f"Error: 'node_modules' directory not found in '{project_path}'", file=sys.stderr)
+        log("ERROR", f"'node_modules' directory not found in '{color_path(project_path)}'")
         return {}
 
     packages = {}
@@ -187,7 +227,7 @@ def get_installed_node_packages(project_path: str) -> Dict[str, Dict[str, Any]]:
 
 def get_npm_repo_url(package_name: str, debug: bool = False) -> Union[str, None]:
     """Queries the npm registry for a package's repository URL."""
-    if debug: print(f"  [DEBUG] Querying npm registry for '{package_name}'...")
+    if debug: log("DEBUG", f"Querying npm registry for '{package_name}'...")
     try:
         url = f"https://registry.npmjs.org/{package_name}"
         response = requests.get(url, timeout=10)
@@ -201,7 +241,7 @@ def get_npm_repo_url(package_name: str, debug: bool = False) -> Union[str, None]
             return normalize_to_repo_root(repo_url)
         return None
     except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-        if debug: print(f"  [DEBUG] Could not query npm registry: {e}")
+        if debug: log("DEBUG", f"Could not query npm registry: {e}")
         return None
 
 # --- Swift Ecosystem Logic ---
@@ -212,7 +252,7 @@ def get_installed_swift_packages(project_path: str) -> Dict[str, Dict[str, Any]]
     """
     resolved_path = os.path.join(project_path, 'Package.resolved')
     if not os.path.exists(resolved_path):
-        print(f"Error: 'Package.resolved' file not found in '{project_path}'", file=sys.stderr)
+        log("ERROR", f"'Package.resolved' file not found in '{color_path(project_path)}'")
         return {}
 
     packages = {}
@@ -235,7 +275,7 @@ def get_installed_swift_packages(project_path: str) -> Dict[str, Dict[str, Any]]
             packages[pkg_name] = {'version': version, 'repo_url': repo_url}
             
     except (json.JSONDecodeError, KeyError) as e:
-        print(f"Error parsing 'Package.resolved': {e}", file=sys.stderr)
+        log("ERROR", f"Error parsing 'Package.resolved': {e}")
         return {}
     return packages
 
@@ -246,19 +286,19 @@ def search_for_repo_url(package_name: str, version: str, choices_cache: Dict[str
     # Check for a cached choice first
     if package_name in choices_cache:
         cached_url = choices_cache[package_name]
-        print(f"  [INFO] Using cached repository choice for '{package_name}': {cached_url}")
+        log("INFO", f"Using cached repository choice for '{color_pkg(package_name)}': {cached_url}", indent=1)
         return cached_url
 
-    print(f"  [INFO] No registry URL found. Searching web for '{package_name}' repository...")
+    log("INFO", f"No registry URL found. Searching web for '{color_pkg(package_name)}' repository...", indent=1)
     query = f"{package_name} {version} source repository github"
     
-    candidate_urls = []
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=15))
         
-        if debug: print(f"  [DEBUG] Web search results for '{query}':\n{json.dumps(results, indent=2)}")
+        if debug: log("DEBUG", f"Web search results for '{query}':\n{json.dumps(results, indent=2)}")
 
+        candidate_urls = []
         unique_repos = set()
         for result in results:
             url = result.get("href")
@@ -266,32 +306,49 @@ def search_for_repo_url(package_name: str, version: str, choices_cache: Dict[str
                 repo_root = normalize_to_repo_root(url)
                 if repo_root and repo_root not in unique_repos:
                     unique_repos.add(repo_root)
-                    candidate_urls.append(repo_root)
-                    if len(candidate_urls) >= 5: break
-        
+                    # Score the result
+                    score = 0
+                    if package_name.lower() in url.lower():
+                        score += 2
+                    if version in url:
+                        score += 1
+                    candidate_urls.append({"url": repo_root, "score": score})
+
         if not candidate_urls: return None
 
-        print(f"  [PROMPT] Found multiple possible repositories for '{package_name}'. Please choose one:")
-        for i, url in enumerate(candidate_urls):
-            print(f"    {i+1}) {url}")
-        print("    0) Skip this package")
+        # Sort candidates by score
+        candidate_urls.sort(key=lambda x: x["score"], reverse=True)
+        
+        # Automatically select if the top score is high enough
+        if candidate_urls[0]["score"] >= 3:
+            chosen_url = candidate_urls[0]["url"]
+            log("INFO", f"Automatically selected repository for '{color_pkg(package_name)}': {chosen_url}", indent=1)
+            choices_cache[package_name] = chosen_url
+            save_choices_cache(choices_cache)
+            return chosen_url
+
+        log("PROMPT", f"Found multiple possible repositories for '{color_pkg(package_name)}'. Please choose one:", indent=1)
+        urls_to_prompt = [c["url"] for c in candidate_urls[:5]]
+        for i, url in enumerate(urls_to_prompt):
+            console.print(f"    {i+1}) {url}")
+        console.print("    0) Skip this package")
 
         while True:
             try:
-                choice = int(input(f"  Enter your choice [0-{len(candidate_urls)}]: "))
-                if 0 <= choice <= len(candidate_urls):
+                choice = int(input(f"  Enter your choice [0-{len(urls_to_prompt)}]: "))
+                if 0 <= choice <= len(urls_to_prompt):
                     if choice == 0:
                         return None
                     
-                    chosen_url = candidate_urls[choice-1]
+                    chosen_url = urls_to_prompt[choice-1]
                     choices_cache[package_name] = chosen_url
                     save_choices_cache(choices_cache)
                     return chosen_url
             except (ValueError, IndexError): pass
-            print("  Invalid choice. Please try again.")
+            log("WARN", "Invalid choice. Please try again.", indent=2)
 
     except Exception as e:
-        if debug: print(f"  [DEBUG] Error during web search: {e}")
+        if debug: log("DEBUG", f"Error during web search: {e}")
     return None
 
 def is_git_repo(url: str) -> bool:
@@ -312,7 +369,7 @@ def clone_and_checkout(repo_url: str, version: str, output_path: str, debug: boo
     specific version tag or commit into the output path.
     """
     if os.path.exists(output_path):
-        print(f"  [INFO] Directory already exists: {output_path}. Skipping.")
+        log("INFO", f"Directory already exists: {color_path(output_path)}. Skipping.", indent=1)
         return
 
     # Generate a cache-friendly name from the repo URL
@@ -321,13 +378,13 @@ def clone_and_checkout(repo_url: str, version: str, output_path: str, debug: boo
 
     # --- Step 1: Ensure we have a valid, up-to-date mirror in the cache ---
     if os.path.exists(cache_repo_path):
-        print(f"  [CACHE] Found existing cache: {cache_repo_path}. Fetching updates...")
+        log("CACHE", f"Found existing cache: {color_path(cache_repo_path)}. Fetching updates", indent=1)
         try:
             # For a mirror, 'git remote update' fetches all changes from all remotes.
             subprocess.run(['git', 'remote', 'update'],
                            cwd=cache_repo_path, check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as e:
-            print(f"  [WARN] Failed to update cache for {repo_url}. Removing and re-cloning. Error: {e.stderr.strip()}")
+            log("WARN", f"Failed to update cache for {repo_url}. Removing and re-cloning. Error: {e.stderr.strip()}", indent=1)
             shutil.rmtree(cache_repo_path)
             clone_to_cache(repo_url, cache_repo_path, debug)
     else:
@@ -335,35 +392,35 @@ def clone_and_checkout(repo_url: str, version: str, output_path: str, debug: boo
 
     # --- Step 2: Clone from local cache to the final destination ---
     if not os.path.exists(cache_repo_path):
-        print(f"  [ERROR] Failed to get a valid copy of the repository in the cache.")
+        log("ERROR", "Failed to get a valid copy of the repository in the cache.", indent=1)
         return
 
     try:
-        print(f"  [INFO] Cloning from local cache to {output_path}...")
+        log("INFO", f"Cloning from local cache to {color_path(output_path)}", indent=1)
         # Clone from the bare repo in the cache to create a working directory
         subprocess.run(['git', 'clone', cache_repo_path, output_path],
                        check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
-        print(f"  [ERROR] Failed to clone from cache to output directory: {e.stderr.strip()}")
+        log("ERROR", f"Failed to clone from cache to output directory: {e.stderr.strip()}", indent=1)
         if os.path.exists(output_path): # cleanup partial clone
             shutil.rmtree(output_path)
         return
 
     # --- Step 3: Checkout the correct version in the destination directory ---
-    tags_to_try = [version, f'v{version}', f'release-{version}']
+    tags_to_try = [version, f'v{version}', f'release-{version}', f'v_{version.replace(".", "_")}']
     checked_out = False
     for tag in tags_to_try:
         try:
             subprocess.run(['git', 'checkout', f'tags/{tag}'],
                            cwd=output_path, check=True, capture_output=True, text=True)
-            print(f"  [SUCCESS] Checked out tag '{tag}' in {output_path}.")
+            log("SUCCESS", f"Checked out tag '{color_version(tag)}' in {color_path(output_path)}.", indent=1)
             checked_out = True
             break
         except subprocess.CalledProcessError as e:
-            if debug: print(f"  [DEBUG] Could not checkout tag '{tag}': {e.stderr.strip()}")
+            if debug: log("DEBUG", f"Could not checkout tag '{tag}': {e.stderr.strip()}", indent=2)
 
     if not checked_out:
-        print(f"  [WARN] Could not find a matching tag for version {version}. Leaving on default branch.")
+        log("WARN", f"Could not find a matching tag for version {color_version(version)}. Leaving on default branch.", indent=1)
 
     # Clean up .git directory for a clean export
     git_dir = os.path.join(output_path, '.git')
@@ -372,15 +429,15 @@ def clone_and_checkout(repo_url: str, version: str, output_path: str, debug: boo
 
 def clone_to_cache(repo_url: str, cache_path: str, debug: bool = False):
     """Clones a repository as a mirror into the specified cache directory."""
-    print(f"  [CACHE] Cloning {repo_url} into cache (mirror): {cache_path}...")
+    log("CACHE", f"Cloning {repo_url} into cache (mirror): {color_path(cache_path)}", indent=1)
     try:
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         # Clone as a bare mirror to act as a local source
         subprocess.run(['git', 'clone', '--mirror', repo_url, cache_path],
                        check=True, capture_output=True, text=True)
-        print(f"  [CACHE] Successfully cloned to cache.")
+        log("CACHE", "Successfully cloned to cache.", indent=2)
     except subprocess.CalledProcessError as e:
-        print(f"  [ERROR] Failed to clone repository into cache: {e.stderr.strip()}")
+        log("ERROR", f"Failed to clone repository into cache: {e.stderr.strip()}", indent=1)
         # If cloning fails, clean up any partial directory
         if os.path.exists(cache_path):
             shutil.rmtree(cache_path)
@@ -395,11 +452,11 @@ def main():
 
     project_path = os.path.abspath(args.path)
     if not os.path.isdir(project_path):
-        print(f"Error: Path '{project_path}' is not a valid directory.", file=sys.stderr)
+        log("ERROR", f"Path '{color_path(project_path)}' is not a valid directory.")
         sys.exit(1)
 
     choices_cache = load_choices_cache()
-    print(f"Inspecting '{args.ecosystem}' environment in: {project_path}")
+    console.print(f"Inspecting '{args.ecosystem}' environment in: {color_path(project_path)}")
     
     # Step 1: Fetch the standard library
     core_version = get_core_tool_version(project_path, args.ecosystem)
@@ -416,17 +473,17 @@ def main():
         packages = get_installed_swift_packages(project_path)
 
     if not packages:
-        print("No third-party packages found to document.")
+        console.print("No third-party packages found to document.")
         sys.exit(0)
         
-    print("\nFound third-party packages to document:")
+    console.print("\nFound third-party packages to document:")
     for pkg, info in sorted(packages.items()):
         version, repo_url = info.get('version'), info.get('repo_url')
-        print(f"\n--- Processing: {pkg}=={version} ---")
+        console.print(f"\n--- Processing: {color_pkg(pkg)}=={color_version(version)} ---")
         
         if repo_url and is_git_repo(repo_url):
             repo_url = normalize_to_repo_root(repo_url)
-            print(f"  [INFO] Found local repository URL: {repo_url}")
+            log("INFO", f"Found local repository URL: {repo_url}", indent=1)
         else:
             if args.ecosystem == 'pip':
                 repo_url = get_pypi_repo_url(pkg, debug=args.debug)
@@ -434,7 +491,7 @@ def main():
                 repo_url = get_npm_repo_url(pkg, debug=args.debug)
             
             if repo_url:
-                print(f"  [INFO] Found registry repository URL: {repo_url}")
+                log("INFO", f"Found registry repository URL: {repo_url}", indent=1)
             elif version:
                 repo_url = search_for_repo_url(pkg, version, choices_cache, debug=args.debug)
 
@@ -442,9 +499,9 @@ def main():
             output_dir = os.path.join(project_path, 'refs', args.ecosystem, pkg, version)
             clone_and_checkout(repo_url, version, output_dir, debug=args.debug)
         elif not repo_url:
-            print(f"  [ERROR] Could not find a repository URL for {pkg} after all attempts.")
+            log("ERROR", f"Could not find a repository URL for {color_pkg(pkg)} after all attempts.", indent=1)
         elif not version:
-            print(f"  [ERROR] Could not determine the version for {pkg}.")
+            log("ERROR", f"Could not determine the version for {color_pkg(pkg)}.", indent=1)
 
 if __name__ == "__main__":
     main()
