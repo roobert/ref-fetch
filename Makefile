@@ -15,10 +15,10 @@ minor:
 major:
 	uv version --bump major
 
-upload-test: patch clean build
+upload-test: clean build
 	uv publish --repository testpypi --token ${TWINE_TEST_PYPI_TOKEN} dist/*
 
-upload: patch clean build
+upload: clean build
 	uv publish --token ${TWINE_PYPI_TOKEN} dist/*
 
 test:
