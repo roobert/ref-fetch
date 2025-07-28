@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="ref-fetch",
-    version="0.1.2",
+    version="0.1.3",
     author="roobert",
     author_email="roobert@gmail.com",
     description="Automates fetching and caching of documentation and source code for specified versions of core standard libraries and third-party packages. It intelligently locates repositories, resolves dependencies, and provides a local, version-controlled reference of your project's entire dependency tree for LLM-assisted development.",
