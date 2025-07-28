@@ -10,6 +10,9 @@ import warnings
 import re
 import shutil
 import tomli
+from typing import Dict, Any, Union
+import requests
+from ddgs import DDGS
 
 # --- Configuration ---
 
@@ -19,16 +22,34 @@ REFS_FETCH_CACHE = os.path.expanduser(
     os.environ.get("REFS_FETCH_CACHE", "~/.cache/refs-fetch")
 )
 
+# The file for storing user's repository choices.
+CHOICES_CACHE_FILE = os.path.join(REFS_FETCH_CACHE, "choices.json")
+
+def load_choices_cache() -> Dict[str, str]:
+    """Loads the repository choices cache from a JSON file."""
+    if not os.path.exists(CHOICES_CACHE_FILE):
+        return {}
+    try:
+        with open(CHOICES_CACHE_FILE, 'r') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+def save_choices_cache(cache: Dict[str, str]):
+    """Saves the repository choices cache to a JSON file."""
+    try:
+        os.makedirs(REFS_FETCH_CACHE, exist_ok=True)
+        with open(CHOICES_CACHE_FILE, 'w') as f:
+            json.dump(cache, f, indent=2)
+    except IOError:
+        print(f"  [WARN] Could not save choices cache to {CHOICES_CACHE_FILE}")
+
 
 # Suppress the specific NotOpenSSLWarning by its message content.
 warnings.filterwarnings(
     "ignore",
     message="urllib3 v2 only supports OpenSSL 1.1.1+",
 )
-
-import requests
-from ddgs import DDGS
-from typing import Dict, Any, Union
 
 # --- Standard Library Fetching ---
 
@@ -220,8 +241,14 @@ def get_installed_swift_packages(project_path: str) -> Dict[str, Dict[str, Any]]
 
 # --- Generic and Shared Logic ---
 
-def search_for_repo_url(package_name: str, version: str, debug: bool = False) -> Union[str, None]:
+def search_for_repo_url(package_name: str, version: str, choices_cache: Dict[str, str], debug: bool = False) -> Union[str, None]:
     """Tier 3: Searches the web, enriches results, and prompts the user."""
+    # Check for a cached choice first
+    if package_name in choices_cache:
+        cached_url = choices_cache[package_name]
+        print(f"  [INFO] Using cached repository choice for '{package_name}': {cached_url}")
+        return cached_url
+
     print(f"  [INFO] No registry URL found. Searching web for '{package_name}' repository...")
     query = f"{package_name} {version} source repository github"
     
@@ -257,8 +284,13 @@ def search_for_repo_url(package_name: str, version: str, debug: bool = False) ->
             try:
                 choice = int(input(f"  Enter your choice [0-{len(enriched_candidates)}]: "))
                 if 0 <= choice <= len(enriched_candidates):
-                    if choice == 0: return None
-                    return enriched_candidates[choice-1]['url']
+                    if choice == 0:
+                        return None
+                    
+                    chosen_url = enriched_candidates[choice-1]['url']
+                    choices_cache[package_name] = chosen_url
+                    save_choices_cache(choices_cache)
+                    return chosen_url
             except (ValueError, IndexError): pass
             print("  Invalid choice. Please try again.")
 
@@ -392,6 +424,7 @@ def main():
         print(f"Error: Path '{project_path}' is not a valid directory.", file=sys.stderr)
         sys.exit(1)
 
+    choices_cache = load_choices_cache()
     print(f"Inspecting '{args.ecosystem}' environment in: {project_path}")
     
     # Step 1: Fetch the standard library
@@ -429,7 +462,7 @@ def main():
             if repo_url:
                 print(f"  [INFO] Found registry repository URL: {repo_url}")
             elif version:
-                repo_url = search_for_repo_url(pkg, version, debug=args.debug)
+                repo_url = search_for_repo_url(pkg, version, choices_cache, debug=args.debug)
 
         if repo_url and version:
             output_dir = os.path.join(project_path, 'refs', args.ecosystem, pkg, version)
