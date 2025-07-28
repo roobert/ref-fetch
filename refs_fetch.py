@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+# doc_fetch.py
+
+import os
+import sys
+import argparse
+import json
+import subprocess
+import warnings
+import re
+
+# Suppress the specific NotOpenSSLWarning by its message content.
+# This is done before importing 'requests' to prevent the warning from
+# being triggered upon its import of urllib3.
+warnings.filterwarnings(
+    "ignore",
+    message="urllib3 v2 only supports OpenSSL 1.1.1+",
+)
+
+import requests
+from ddgs import DDGS
+from typing import Dict, Any, Union
+
+# --- Python Ecosystem Logic ---
+
+def get_installed_python_packages(project_path: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Gets a dictionary of installed Python packages with their version and any locally
+    found repository URL.
+    """
+    venv_path = os.path.join(project_path, '.venv')
+    python_executable = os.path.join(venv_path, 'bin', 'python')
+
+    if not os.path.exists(python_executable):
+        print(f"Error: Python executable not found at '{python_executable}'", file=sys.stderr)
+        return {}
+
+    script = """
+import json
+import sys
+try:
+    from importlib import metadata
+except ImportError:
+    import importlib_metadata as metadata
+
+packages = {}
+for dist in metadata.distributions():
+    pkg_name = dist.metadata['name']
+    repo_url = None
+    if dist.metadata.get('project-url'):
+        for url_info in dist.metadata.get_all('project-url'):
+            name, url = url_info.split(', ')
+            if 'source' in name.lower() or 'repository' in name.lower() or 'homepage' in name.lower():
+                repo_url = url
+                break
+    packages[pkg_name] = {'version': dist.version, 'repo_url': repo_url}
+
+sys.stdout.write(json.dumps(packages))
+"""
+    try:
+        result = subprocess.run(
+            [python_executable, '-c', script],
+            capture_output=True, text=True, check=True
+        )
+        packages = json.loads(result.stdout)
+        for noisy_pkg in ['pip', 'setuptools', 'wheel', 'pkg-resources', 'importlib-metadata']:
+            packages.pop(noisy_pkg, None)
+        return packages
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+        print(f"Error inspecting Python environment: {e}", file=sys.stderr)
+        return {}
+
+def get_pypi_repo_url(package_name: str, debug: bool = False) -> Union[str, None]:
+    """Queries the PyPI API for a package's repository URL."""
+    if debug: print(f"  [DEBUG] Querying PyPI API for '{package_name}'...")
+    try:
+        url = f"https://pypi.org/pypi/{package_name}/json"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        urls = data.get("info", {}).get("project_urls")
+        if urls:
+            for key, value in urls.items():
+                if 'source' in key.lower() or 'repository' in key.lower() or 'homepage' in key.lower():
+                    if value and is_git_repo(value):
+                        return normalize_to_repo_root(value)
+        return None
+    except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+        if debug: print(f"  [DEBUG] Could not query PyPI API: {e}")
+        return None
+
+# --- Node.js Ecosystem Logic ---
+
+def get_installed_node_packages(project_path: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Gets a dictionary of installed Node.js packages by reading package.json
+    files in node_modules.
+    """
+    node_modules_path = os.path.join(project_path, 'node_modules')
+    if not os.path.isdir(node_modules_path):
+        print(f"Error: 'node_modules' directory not found in '{project_path}'", file=sys.stderr)
+        return {}
+
+    packages = {}
+    for dir_name in os.listdir(node_modules_path):
+        pkg_path = os.path.join(node_modules_path, dir_name)
+        if os.path.isdir(pkg_path):
+            package_json_path = os.path.join(pkg_path, 'package.json')
+            if os.path.exists(package_json_path):
+                try:
+                    with open(package_json_path, 'r') as f:
+                        data = json.load(f)
+                    packages[data['name']] = {'version': data['version'], 'repo_url': None}
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    return packages
+
+def get_npm_repo_url(package_name: str, debug: bool = False) -> Union[str, None]:
+    """Queries the npm registry for a package's repository URL."""
+    if debug: print(f"  [DEBUG] Querying npm registry for '{package_name}'...")
+    try:
+        url = f"https://registry.npmjs.org/{package_name}"
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        repo_info = data.get('repository')
+        if isinstance(repo_info, dict) and repo_info.get('url'):
+            repo_url = repo_info['url']
+            if repo_url.startswith('git+'): repo_url = repo_url[4:]
+            if repo_url.endswith('.git'): repo_url = repo_url[:-4]
+            return normalize_to_repo_root(repo_url)
+        return None
+    except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+        if debug: print(f"  [DEBUG] Could not query npm registry: {e}")
+        return None
+
+# --- Generic and Shared Logic ---
+
+def search_for_repo_url(package_name: str, version: str, debug: bool = False) -> Union[str, None]:
+    """Tier 3: Searches the web, enriches results, and prompts the user."""
+    print(f"  [INFO] No registry URL found. Searching web for '{package_name}' repository...")
+    query = f"{package_name} {version} source repository github"
+    
+    candidate_urls = []
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=15))
+        
+        if debug: print(f"  [DEBUG] Web search results for '{query}':\n{json.dumps(results, indent=2)}")
+
+        unique_repos = set()
+        for result in results:
+            url = result.get("href")
+            if url and is_git_repo(url):
+                repo_root = normalize_to_repo_root(url)
+                if repo_root and repo_root not in unique_repos:
+                    unique_repos.add(repo_root)
+                    candidate_urls.append(repo_root)
+                    if len(candidate_urls) >= 5: break
+        
+        if not candidate_urls: return None
+
+        enriched_candidates = [get_github_repo_info(url, debug) for url in candidate_urls]
+        enriched_candidates = [info for info in enriched_candidates if info]
+
+        print(f"  [PROMPT] Found multiple possible repositories for '{package_name}'. Please choose one:")
+        for i, info in enumerate(enriched_candidates):
+            print(f"    {i+1}) {info['url']} (★ {info['stars']}, Last Push: {info['last_push']})")
+            print(f"       - {info['description']}")
+        print("    0) Skip this package")
+
+        while True:
+            try:
+                choice = int(input(f"  Enter your choice [0-{len(enriched_candidates)}]: "))
+                if 0 <= choice <= len(enriched_candidates):
+                    if choice == 0: return None
+                    return enriched_candidates[choice-1]['url']
+            except (ValueError, IndexError): pass
+            print("  Invalid choice. Please try again.")
+
+    except Exception as e:
+        if debug: print(f"  [DEBUG] Error during web search: {e}")
+    return None
+
+def get_github_repo_info(repo_url: str, debug: bool = False) -> Union[Dict[str, Any], None]:
+    """Fetches stars, last push date, and description from the GitHub API."""
+    repo_root = normalize_to_repo_root(repo_url)
+    if not repo_root: return None
+    match = re.search(r"github\.com/([^/]+)/([^/]+)", repo_root)
+    if not match: return None
+    owner, repo = match.groups()
+    api_url = f"https://api.github.com/repos/{owner}/{repo}"
+    try:
+        response = requests.get(api_url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return {
+            "url": repo_root,
+            "stars": data.get("stargazers_count", 0),
+            "last_push": data.get("pushed_at", "N/A").split("T")[0],
+            "description": data.get("description", "No description available.")
+        }
+    except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
+        if debug: print(f"  [DEBUG] Could not query GitHub API for {repo_root}: {e}")
+        return {"url": repo_root, "stars": "N/A", "last_push": "N/A", "description": "Could not fetch details."}
+
+def is_git_repo(url: str) -> bool:
+    """Checks if a URL is a known git hosting domain."""
+    return 'github.com' in url or 'gitlab.com' in url
+
+def normalize_to_repo_root(url: str) -> Union[str, None]:
+    """Normalizes a deep-link URL to its git repository root."""
+    match = re.search(r"(https://github\.com/[^/]+/[^/]+)", url)
+    if match: return match.group(1)
+    match = re.search(r"(https://gitlab\.com/[^/]+/[^/]+)", url)
+    if match: return match.group(1)
+    return None
+
+def clone_and_checkout(repo_url: str, version: str, output_path: str, debug: bool = False):
+    """Clones a repository, then attempts to check out the specific version tag."""
+    if os.path.exists(output_path):
+        print(f"  [INFO] Directory already exists: {output_path}. Skipping.")
+        return
+
+    print(f"  [INFO] Cloning from {repo_url}...")
+    try:
+        # First, clone the repository (shallow clone for efficiency)
+        subprocess.run(['git', 'clone', '--depth', '1', repo_url, output_path], 
+                       check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f"  [ERROR] Failed to clone repository: {e.stderr.strip()}")
+        return
+
+    # Now, try to check out the specific tag
+    tags_to_try = [f'v{version}', version, f'release-{version}']
+    for tag in tags_to_try:
+        try:
+            # Fetch the specific tag
+            subprocess.run(['git', 'fetch', 'origin', 'tag', tag], 
+                           cwd=output_path, check=True, capture_output=True, text=True)
+            # Checkout the tag
+            subprocess.run(['git', 'checkout', tag], 
+                           cwd=output_path, check=True, capture_output=True, text=True)
+            print(f"  [SUCCESS] Checked out tag '{tag}'.")
+            return
+        except subprocess.CalledProcessError as e:
+            if debug:
+                print(f"  [DEBUG] Could not find or checkout tag '{tag}': {e.stderr.strip()}")
+    
+    print(f"  [WARN] Could not find a matching tag for version {version}. Leaving on default branch.")
+
+def main():
+    """Main function to fetch library source code."""
+    parser = argparse.ArgumentParser(description="Clone the source repositories for installed libraries.")
+    parser.add_argument("ecosystem", choices=['pip', 'npm'], help="The package ecosystem to process.")
+    parser.add_argument("path", nargs='?', default='.', help="Path to the project directory.")
+    parser.add_argument("--debug", action="store_true", help="Enable debug output for git and API commands.")
+    args = parser.parse_args()
+
+    project_path = os.path.abspath(args.path)
+    if not os.path.isdir(project_path):
+        print(f"Error: Path '{project_path}' is not a valid directory.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Inspecting '{args.ecosystem}' environment in: {project_path}")
+    
+    packages = {}
+    if args.ecosystem == 'pip':
+        packages = get_installed_python_packages(project_path)
+    elif args.ecosystem == 'npm':
+        packages = get_installed_node_packages(project_path)
+
+    if not packages:
+        print("No packages found to document.")
+        sys.exit(0)
+        
+    print("\nFound packages to document:")
+    for pkg, info in sorted(packages.items()):
+        version, repo_url = info.get('version'), info.get('repo_url')
+        print(f"\n--- Processing: {pkg}=={version} ---")
+        
+        if repo_url and is_git_repo(repo_url):
+            repo_url = normalize_to_repo_root(repo_url)
+            print(f"  [INFO] Found local repository URL: {repo_url}")
+        else:
+            if args.ecosystem == 'pip':
+                repo_url = get_pypi_repo_url(pkg, debug=args.debug)
+            elif args.ecosystem == 'npm':
+                repo_url = get_npm_repo_url(pkg, debug=args.debug)
+            
+            if repo_url:
+                print(f"  [INFO] Found registry repository URL: {repo_url}")
+            elif version:
+                repo_url = search_for_repo_url(pkg, version, debug=args.debug)
+
+        if repo_url and version:
+            output_dir = os.path.join(project_path, 'refs', args.ecosystem, pkg, version)
+            clone_and_checkout(repo_url, version, output_dir, debug=args.debug)
+        elif not repo_url:
+            print(f"  [ERROR] Could not find a repository URL for {pkg} after all attempts.")
+        elif not version:
+            print(f"  [ERROR] Could not determine the version for {pkg}.")
+
+if __name__ == "__main__":
+    main()
