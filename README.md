@@ -1,6 +1,6 @@
 # ref-fetch
 
-A tool to fetch, cache, and copy specific versions of libraries into repositories to provide code references and documentation to LLMs.
+Automates fetching and caching of documentation and source code for specified versions of core standard libraries and third-party packages. It intelligently locates repositories, resolves dependencies, and provides a local, version-controlled reference of your project's entire dependency tree for LLM-assisted development.
 
 ## Installation
 

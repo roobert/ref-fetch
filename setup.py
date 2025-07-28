@@ -8,7 +8,7 @@ setuptools.setup(
     version="0.1.2",
     author="roobert",
     author_email="roobert@gmail.com",
-    description="A tool to fetch, cache, and copy specific versions of libraries into repositories to provide code references and documentation to LLMs.",
+    description="Automates fetching and caching of documentation and source code for specified versions of core standard libraries and third-party packages. It intelligently locates repositories, resolves dependencies, and provides a local, version-controlled reference of your project's entire dependency tree for LLM-assisted development.",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/roobert/ref-fetch",
