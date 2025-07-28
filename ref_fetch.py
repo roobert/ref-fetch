@@ -8,7 +8,17 @@ import json
 import subprocess
 import warnings
 import re
+import shutil
 import tomli
+
+# --- Configuration ---
+
+# The root directory for caching fetched repositories.
+# Can be overridden by the REFS_FETCH_CACHE environment variable.
+REFS_FETCH_CACHE = os.path.expanduser(
+    os.environ.get("REFS_FETCH_CACHE", "~/.cache/refs-fetch")
+)
+
 
 # Suppress the specific NotOpenSSLWarning by its message content.
 warnings.filterwarnings(
@@ -291,35 +301,83 @@ def normalize_to_repo_root(url: str) -> Union[str, None]:
     return None
 
 def clone_and_checkout(repo_url: str, version: str, output_path: str, debug: bool = False):
-    """Clones a repository, then attempts to check out the specific version tag or commit."""
+    """
+    Clones a repository from a cache or from the source, then checks out the
+    specific version tag or commit into the output path.
+    """
     if os.path.exists(output_path):
         print(f"  [INFO] Directory already exists: {output_path}. Skipping.")
         return
 
-    print(f"  [INFO] Cloning from {repo_url}...")
-    try:
-        subprocess.run(['git', 'clone', '--depth', '1', repo_url, output_path], 
-                       check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as e:
-        print(f"  [ERROR] Failed to clone repository: {e.stderr.strip()}")
+    # Generate a cache-friendly name from the repo URL
+    cache_repo_name = re.sub(r'[^a-zA-Z0-9]', '_', repo_url)
+    cache_repo_path = os.path.join(REFS_FETCH_CACHE, cache_repo_name)
+
+    # --- Step 1: Ensure we have a valid, up-to-date mirror in the cache ---
+    if os.path.exists(cache_repo_path):
+        print(f"  [CACHE] Found existing cache: {cache_repo_path}. Fetching updates...")
+        try:
+            # For a mirror, 'git remote update' fetches all changes from all remotes.
+            subprocess.run(['git', 'remote', 'update'],
+                           cwd=cache_repo_path, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            print(f"  [WARN] Failed to update cache for {repo_url}. Removing and re-cloning. Error: {e.stderr.strip()}")
+            shutil.rmtree(cache_repo_path)
+            clone_to_cache(repo_url, cache_repo_path, debug)
+    else:
+        clone_to_cache(repo_url, cache_repo_path, debug)
+
+    # --- Step 2: Clone from local cache to the final destination ---
+    if not os.path.exists(cache_repo_path):
+        print(f"  [ERROR] Failed to get a valid copy of the repository in the cache.")
         return
 
     try:
-        subprocess.run(['git', 'fetch', '--tags'], cwd=output_path, check=True, capture_output=True, text=True)
+        print(f"  [INFO] Cloning from local cache to {output_path}...")
+        # Clone from the bare repo in the cache to create a working directory
+        subprocess.run(['git', 'clone', cache_repo_path, output_path],
+                       check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as e:
-        if debug: print(f"  [DEBUG] Could not fetch tags: {e.stderr.strip()}")
+        print(f"  [ERROR] Failed to clone from cache to output directory: {e.stderr.strip()}")
+        if os.path.exists(output_path): # cleanup partial clone
+            shutil.rmtree(output_path)
+        return
 
+    # --- Step 3: Checkout the correct version in the destination directory ---
     tags_to_try = [version, f'v{version}', f'release-{version}']
+    checked_out = False
     for tag in tags_to_try:
         try:
-            subprocess.run(['git', 'checkout', f'tags/{tag}'], 
+            subprocess.run(['git', 'checkout', f'tags/{tag}'],
                            cwd=output_path, check=True, capture_output=True, text=True)
-            print(f"  [SUCCESS] Checked out tag '{tag}'.")
-            return
+            print(f"  [SUCCESS] Checked out tag '{tag}' in {output_path}.")
+            checked_out = True
+            break
         except subprocess.CalledProcessError as e:
             if debug: print(f"  [DEBUG] Could not checkout tag '{tag}': {e.stderr.strip()}")
-    
-    print(f"  [WARN] Could not find a matching tag for version {version}. Leaving on default branch.")
+
+    if not checked_out:
+        print(f"  [WARN] Could not find a matching tag for version {version}. Leaving on default branch.")
+
+    # Clean up .git directory for a clean export
+    git_dir = os.path.join(output_path, '.git')
+    if os.path.exists(git_dir):
+        shutil.rmtree(git_dir)
+
+def clone_to_cache(repo_url: str, cache_path: str, debug: bool = False):
+    """Clones a repository as a mirror into the specified cache directory."""
+    print(f"  [CACHE] Cloning {repo_url} into cache (mirror): {cache_path}...")
+    try:
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        # Clone as a bare mirror to act as a local source
+        subprocess.run(['git', 'clone', '--mirror', repo_url, cache_path],
+                       check=True, capture_output=True, text=True)
+        print(f"  [CACHE] Successfully cloned to cache.")
+    except subprocess.CalledProcessError as e:
+        print(f"  [ERROR] Failed to clone repository into cache: {e.stderr.strip()}")
+        # If cloning fails, clean up any partial directory
+        if os.path.exists(cache_path):
+            shutil.rmtree(cache_path)
 
 def main():
     """Main function to fetch library source code."""

@@ -1,3 +1,5 @@
 PyYAML
 requests
 ddgs
+tomli
+beautifulsoup4
