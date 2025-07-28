@@ -271,23 +271,19 @@ def search_for_repo_url(package_name: str, version: str, choices_cache: Dict[str
         
         if not candidate_urls: return None
 
-        enriched_candidates = [get_github_repo_info(url, debug) for url in candidate_urls]
-        enriched_candidates = [info for info in enriched_candidates if info]
-
         print(f"  [PROMPT] Found multiple possible repositories for '{package_name}'. Please choose one:")
-        for i, info in enumerate(enriched_candidates):
-            print(f"    {i+1}) {info['url']} (★ {info['stars']}, Last Push: {info['last_push']})")
-            print(f"       - {info['description']}")
+        for i, url in enumerate(candidate_urls):
+            print(f"    {i+1}) {url}")
         print("    0) Skip this package")
 
         while True:
             try:
-                choice = int(input(f"  Enter your choice [0-{len(enriched_candidates)}]: "))
-                if 0 <= choice <= len(enriched_candidates):
+                choice = int(input(f"  Enter your choice [0-{len(candidate_urls)}]: "))
+                if 0 <= choice <= len(candidate_urls):
                     if choice == 0:
                         return None
                     
-                    chosen_url = enriched_candidates[choice-1]['url']
+                    chosen_url = candidate_urls[choice-1]
                     choices_cache[package_name] = chosen_url
                     save_choices_cache(choices_cache)
                     return chosen_url
@@ -297,28 +293,6 @@ def search_for_repo_url(package_name: str, version: str, choices_cache: Dict[str
     except Exception as e:
         if debug: print(f"  [DEBUG] Error during web search: {e}")
     return None
-
-def get_github_repo_info(repo_url: str, debug: bool = False) -> Union[Dict[str, Any], None]:
-    """Fetches stars, last push date, and description from the GitHub API."""
-    repo_root = normalize_to_repo_root(repo_url)
-    if not repo_root: return None
-    match = re.search(r"github\.com/([^/]+)/([^/]+)", repo_root)
-    if not match: return None
-    owner, repo = match.groups()
-    api_url = f"https://api.github.com/repos/{owner}/{repo}"
-    try:
-        response = requests.get(api_url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        return {
-            "url": repo_root,
-            "stars": data.get("stargazers_count", 0),
-            "last_push": data.get("pushed_at", "N/A").split("T")[0],
-            "description": data.get("description", "No description available.")
-        }
-    except (requests.exceptions.RequestException, json.JSONDecodeError) as e:
-        if debug: print(f"  [DEBUG] Could not query GitHub API for {repo_root}: {e}")
-        return {"url": repo_root, "stars": "N/A", "last_push": "N/A", "description": "Could not fetch details."}
 
 def is_git_repo(url: str) -> bool:
     """Checks if a URL is a known git hosting domain."""
