@@ -13,4 +13,4 @@ upload: clean build
 	uv publish --token ${TWINE_PYPI_TOKEN} dist/*
 
 test:
-	pip install -r requirements.txt; rm -rf refs; ./ref_fetch.py pip
+	uv sync; rm -rf refs; ref-fetch pip

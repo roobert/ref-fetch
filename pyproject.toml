@@ -1,3 +1,32 @@
 [build-system]
-requires = ["setuptools>=42", "wheel"]
+requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "ref-fetch"
+version = "0.2.0"
+authors = [
+    { name="roobert", email="roobert@gmail.com" },
+]
+description = "Automates fetching and caching of documentation and source code for specified versions of core standard libraries and third-party packages. It intelligently locates repositories, resolves dependencies, and provides a local, version-controlled reference of your project's entire dependency tree for LLM-assisted development."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text="MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "PyYAML",
+    "requests",
+    "ddgs",
+    "tomli",
+    "beautifulsoup4",
+    "rich",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/roobert/ref-fetch"
+
+[project.scripts]
+ref-fetch = "ref_fetch:main"

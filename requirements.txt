@@ -1,6 +1,0 @@
-PyYAML
-requests
-ddgs
-tomli
-beautifulsoup4
-rich
