@@ -67,7 +67,7 @@ def log(level: str, message: str, indent: int = 0, debug: bool = False):
     
     color = colors.get(level.upper(), "white")
     indent_str = "  " * indent
-    console.print(f"{indent_str}[white][[/][{color}]{level.upper().ljust(7)}[/{color}][white]][/] {message}", highlight=False)
+    console.print(f"{indent_str} [white][[/][{color}]{level.upper().rjust(7)}[/{color}][white]][/] {message}", highlight=False)
 
 # Suppress the specific NotOpenSSLWarning by its message content.
 warnings.filterwarnings(

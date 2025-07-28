@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ref-fetch"
-version = "0.2.0"
+version = "0.3.0"
 authors = [
     { name="roobert", email="roobert@gmail.com" },
 ]
@@ -30,3 +30,6 @@ dependencies = [
 
 [project.scripts]
 ref-fetch = "ref_fetch:main"
+
+[tool.setuptools]
+py-modules = ["ref_fetch"]
